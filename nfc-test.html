@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Test lettura badge NFC</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --text: #1d2330; --muted: #667085;
+    --border: #e2e5ea; --accent: #1f6feb; --ok: #1a7f37; --err: #c62828; --warn: #9a6700;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --card: #1b2029; --text: #e6e9ef; --muted: #9aa3b2;
+      --border: #2c3340; --accent: #4c8dff; --ok: #3fb950; --err: #ff6b6b; --warn: #d4a72c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 640px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; font-size: .95rem; }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 16px; margin-bottom: 16px;
+  }
+  button {
+    font: inherit; font-weight: 600; border: 0; border-radius: 10px;
+    padding: 14px 18px; cursor: pointer; width: 100%;
+    background: var(--accent); color: #fff;
+  }
+  button.secondary {
+    background: transparent; color: var(--text); border: 1px solid var(--border);
+    width: auto; padding: 8px 12px; font-weight: 500; font-size: .9rem;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  .status { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-size: .95rem; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.on { background: var(--ok); animation: pulse 1.4s infinite; }
+  .dot.err { background: var(--err); }
+  .dot.warn { background: var(--warn); }
+  @keyframes pulse { 50% { opacity: .3; } }
+  .uid {
+    font: 600 1.6rem/1.3 ui-monospace, "Cascadia Mono", Consolas, monospace;
+    word-break: break-all; margin: 4px 0 12px;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+  td { padding: 6px 0; border-top: 1px solid var(--border); vertical-align: top; }
+  td:first-child { color: var(--muted); width: 45%; padding-right: 8px; }
+  td.mono { font-family: ui-monospace, Consolas, monospace; word-break: break-all; }
+  .label { font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  ul { list-style: none; padding: 0; margin: 0; }
+  li { padding: 8px 0; border-top: 1px solid var(--border); font-size: .9rem; }
+  li:first-child { border-top: 0; }
+  li .t { color: var(--muted); font-size: .8rem; }
+  .mono { font-family: ui-monospace, Consolas, monospace; }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .hidden { display: none; }
+  .empty { color: var(--muted); font-size: .9rem; }
+  pre { white-space: pre-wrap; word-break: break-all; margin: 4px 0 0; font-size: .85rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Test lettura badge NFC</h1>
+  <p class="sub">Web NFC · Chrome su Android · serve HTTPS</p>
+
+  <div class="card">
+    <button id="btnScan">Avvia lettura</button>
+    <div class="status"><span class="dot" id="dot"></span><span id="statusText">Pronto. Premi il pulsante e avvicina il badge al retro del tablet.</span></div>
+  </div>
+
+  <div class="card hidden" id="lastCard">
+    <div class="row">
+      <span class="label">Ultimo badge letto</span>
+      <button class="secondary" id="btnCopy">Copia UID</button>
+    </div>
+    <div class="uid" id="uid"></div>
+    <table id="formats"></table>
+    <div id="records"></div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <span class="label">Storico letture</span>
+      <button class="secondary" id="btnClear">Svuota</button>
+    </div>
+    <ul id="history"><li class="empty">Nessuna lettura.</li></ul>
+  </div>
+
+  <div class="card">
+    <span class="label">Ambiente</span>
+    <table id="env"></table>
+  </div>
+</main>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const btn = $('btnScan'), dot = $('dot'), statusText = $('statusText');
+  const history = [];
+  let reader = null, ctrl = null, lastUid = '';
+
+  function setStatus(text, state) {
+    statusText.textContent = text;
+    dot.className = 'dot' + (state ? ' ' + state : '');
+  }
+
+  // --- Ambiente ---
+  const inIframe = (() => { try { return window.top !== window.self; } catch { return true; } })();
+  const env = [
+    ['Web NFC disponibile', 'NDEFReader' in window ? 'Sì' : 'No'],
+    ['Contesto sicuro (HTTPS)', window.isSecureContext ? 'Sì' : 'No'],
+    ['Pagina in primo piano (no iframe)', inIframe ? 'No' : 'Sì'],
+    ['Browser', navigator.userAgent],
+  ];
+  $('env').innerHTML = env.map(([k, v]) => `<tr><td>${k}</td><td class="mono">${esc(v)}</td></tr>`).join('');
+
+  if (!('NDEFReader' in window)) {
+    btn.disabled = true;
+    setStatus('Questo browser non supporta Web NFC. Usa Chrome su Android con NFC attivo.', 'err');
+  } else if (!window.isSecureContext) {
+    btn.disabled = true;
+    setStatus('La pagina deve essere servita in HTTPS (o da localhost).', 'err');
+  } else if (inIframe) {
+    setStatus('La pagina è dentro un iframe: Web NFC funziona solo aprendola direttamente.', 'warn');
+  }
+
+  // --- Conversioni UID ---
+  function uidBytes(serial) {
+    return serial.split(':').filter(Boolean).map(h => parseInt(h, 16));
+  }
+  const hex = b => b.map(x => x.toString(16).padStart(2, '0')).join('').toUpperCase();
+  const dec = b => b.reduce((acc, x) => acc * 256n + BigInt(x), 0n).toString();
+
+  function formats(serial) {
+    const b = uidBytes(serial);
+    const r = [...b].reverse();
+    const rows = [
+      ['Lunghezza', `${b.length} byte`],
+      ['HEX', hex(b)],
+      ['HEX invertito', hex(r)],
+      ['Decimale', dec(b)],
+      ['Decimale invertito', dec(r)],
+    ];
+    if (b.length === 4) rows.push(['Decimale invertito (10 cifre)', dec(r).padStart(10, '0')]);
+    return rows;
+  }
+
+  // --- Decodifica record NDEF ---
+  function decodeRecord(rec) {
+    const out = { tipo: rec.recordType, mime: rec.mediaType || '', valore: '' };
+    try {
+      if (rec.recordType === 'text') {
+        out.valore = new TextDecoder(rec.encoding || 'utf-8').decode(rec.data);
+        if (rec.lang) out.tipo += ` (${rec.lang})`;
+      } else if (rec.recordType === 'url' || rec.recordType === 'absolute-url') {
+        out.valore = new TextDecoder().decode(rec.data);
+      } else if (rec.recordType === 'mime') {
+        const txt = new TextDecoder().decode(rec.data);
+        out.valore = rec.mediaType && rec.mediaType.includes('json')
+          ? JSON.stringify(JSON.parse(txt), null, 2) : txt;
+      } else if (rec.data) {
+        out.valore = hex([...new Uint8Array(rec.data.buffer)]);
+      }
+    } catch (e) {
+      out.valore = '(impossibile decodificare: ' + e.message + ')';
+    }
+    return out;
+  }
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  // --- Rendering ---
+  function showReading(serial, records) {
+    lastUid = serial || '';
+    $('lastCard').classList.remove('hidden');
+    $('uid').textContent = serial ? serial.toUpperCase() : '(UID non disponibile)';
+    $('formats').innerHTML = serial
+      ? formats(serial).map(([k, v]) => `<tr><td>${k}</td><td class="mono">${esc(v)}</td></tr>`).join('')
+      : '';
+    $('records').innerHTML = records.length
+      ? '<p class="label" style="margin:16px 0 4px">Record NDEF</p>' + records.map((r, i) =>
+          `<table><tr><td>#${i + 1} tipo</td><td class="mono">${esc(r.tipo)}${r.mime ? ' · ' + esc(r.mime) : ''}</td></tr>
+           <tr><td>Contenuto</td><td><pre>${esc(r.valore)}</pre></td></tr></table>`).join('')
+      : '<p class="empty" style="margin-top:12px">Nessun record NDEF (normale per badge MIFARE non formattati).</p>';
+
+    history.unshift({ t: new Date(), serial, n: records.length });
+    renderHistory();
+  }
+
+  function renderHistory() {
+    $('history').innerHTML = history.length
+      ? history.map(h => `<li><span class="mono">${esc((h.serial || '—').toUpperCase())}</span>
+          <div class="t">${h.t.toLocaleString('it-IT')} · ${h.n} record NDEF</div></li>`).join('')
+      : '<li class="empty">Nessuna lettura.</li>';
+  }
+
+  // --- Scansione ---
+  async function start() {
+    try {
+      ctrl = new AbortController();
+      reader = new NDEFReader();
+      reader.onreading = ev => {
+        const recs = [...(ev.message?.records || [])].map(decodeRecord);
+        showReading(ev.serialNumber, recs);
+        if (navigator.vibrate) navigator.vibrate(120);
+        setStatus('Badge letto. In attesa del prossimo…', 'on');
+      };
+      reader.onreadingerror = () => {
+        setStatus('Badge rilevato ma non leggibile come NDEF. Riprova tenendolo fermo.', 'warn');
+      };
+      await reader.scan({ signal: ctrl.signal });
+      btn.textContent = 'Ferma lettura';
+      setStatus('In ascolto: avvicina il badge al retro del tablet.', 'on');
+    } catch (e) {
+      const msg = {
+        NotAllowedError: 'Permesso NFC negato. Consentilo nelle impostazioni del sito in Chrome.',
+        NotSupportedError: 'NFC non disponibile o disattivato. Attivalo nelle impostazioni Android.',
+        NotReadableError: 'Il lettore NFC è occupato o non accessibile.',
+        SecurityError: 'Bloccato per motivi di sicurezza (HTTPS o iframe).',
+      }[e.name] || `Errore: ${e.name} – ${e.message}`;
+      setStatus(msg, 'err');
+      ctrl = null;
+    }
+  }
+
+  function stop() {
+    if (ctrl) ctrl.abort();
+    ctrl = null;
+    btn.textContent = 'Avvia lettura';
+    setStatus('Lettura fermata.', '');
+  }
+
+  btn.addEventListener('click', () => (ctrl ? stop() : start()));
+  $('btnClear').addEventListener('click', () => { history.length = 0; renderHistory(); });
+  $('btnCopy').addEventListener('click', async () => {
+    if (!lastUid) return;
+    try { await navigator.clipboard.writeText(lastUid.toUpperCase()); $('btnCopy').textContent = 'Copiato'; }
+    catch { $('btnCopy').textContent = 'Copia non riuscita'; }
+    setTimeout(() => ($('btnCopy').textContent = 'Copia UID'), 1500);
+  });
+})();
+</script>
+</body>
+</html>
